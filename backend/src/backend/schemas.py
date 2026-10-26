@@ -190,12 +190,14 @@ class PredictionRequest(BaseModel):
 class PredictionResponse(BaseModel):
     """Response from the /predict endpoint."""
 
-    risk_level: str = Field(
-        description="Return risk level: 'Low' (prob < 0.30), 'Medium' (0.30–0.59), 'High' (≥ 0.60)"
-    )
+    will_return: bool = Field(description="True if the model predicts the item will be returned")
     return_probability: float = Field(
         description="Model's probability (0–1) that the item will be returned"
     )
+    confidence: str = Field(
+        description="Confidence band: 'High' (>0.80 or <0.20), 'Medium' (0.60–0.80 or 0.20–0.40), 'Low' (0.40–0.60)"
+    )
+    threshold_used: float = Field(description="Decision threshold applied to the probability")
     model_name: str = Field(description="Name of the underlying ML model")
 
 
