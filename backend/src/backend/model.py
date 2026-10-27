@@ -8,13 +8,10 @@ Responsible for:
   3. Running inference and returning a structured result.
 
 Preprocessing pipeline (mirrors the training notebook):
-  a. Fill missing numeric fields using per-feature SCALED medians stored in
-     model_data.joblib['train_medians'].  These are already in StandardScaler
-     space so they are injected directly without double-scaling.
-  b. Compute log_price = log1p(price), then scale numeric block with the
-     saved StandardScaler.  log_price is scaled along with the other numeric
-     features; its median fallback from train_medians is used when price
-     itself is missing (but price is a required field, so this never triggers).
+  a. Impute missing numeric fields using per-feature raw medians stored in
+     model_data.joblib['train_medians'].
+  b. Compute log_price = log1p(price), then scale the complete 14-column
+     numeric block with the saved StandardScaler.
   c. One-hot encode the 5 categorical columns and align the result to the
      saved model_columns list (unseen OHE columns are dropped; missing ones
      are filled with 0).
@@ -114,44 +111,34 @@ class ModelService:
         Convert a PredictionRequest into an 85-column DataFrame ready for
         the Logistic Regression model.
         """
-        raw = request.model_dump()
+        raw = request.model_dump(mode="json")
 
         # ---- 1. Numeric block -----------------------------------------
         # log_price replaces price in the feature space.
         import math
         log_price = math.log1p(raw["price"])
 
-        # Track which numeric features the user actually provided vs left None.
-        # We always pass ALL 14 columns to the scaler (it requires them together).
-        # None fields get a placeholder of 0.0 for the scaling step, then their
-        # scaled position is overwritten with the pre-computed scaled median from
-        # train_medians.
-        has_value: dict[str, bool] = {}
+        # Omitted numeric fields are imputed with their raw training median,
+        # then the complete 14-feature row is transformed with StandardScaler.
         full_numeric_raw: dict[str, float] = {}
-
         for feat in self._numeric_features:
             if feat == "log_price":
-                has_value[feat] = True
                 full_numeric_raw[feat] = log_price
             else:
                 val = raw.get(feat)
-                has_value[feat] = val is not None
-                full_numeric_raw[feat] = float(val) if val is not None else 0.0
+                full_numeric_raw[feat] = (
+                    float(val)
+                    if val is not None
+                    else float(self._train_medians.get(feat, 0.0))
+                )
 
         # Scale the full 14-column row in one call (matches scaler's fit signature).
         scale_df = pd.DataFrame([full_numeric_raw], columns=self._scaler.feature_names_in_)
         scaled_vals = self._scaler.transform(scale_df)[0]
-        scaled_series = pd.Series(scaled_vals, index=self._scaler.feature_names_in_)
-
-        # Assemble final numeric row — keep scaled value for provided features,
-        # override with the pre-scaled median for features that were None.
-        numeric_row: dict[str, float] = {}
-        for feat in self._numeric_features:
-            if has_value[feat]:
-                numeric_row[feat] = float(scaled_series[feat])
-            else:
-                # train_medians stores medians in StandardScaler output space.
-                numeric_row[feat] = float(self._train_medians.get(feat, 0.0))
+        numeric_row: dict[str, float] = {
+            col: float(val)
+            for col, val in zip(self._scaler.feature_names_in_, scaled_vals)
+        }
 
         # ---- 2. Binary flags ------------------------------------------
         binary_row: dict[str, int] = {
